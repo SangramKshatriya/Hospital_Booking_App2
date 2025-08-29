@@ -1,0 +1,30 @@
+DROP TABLE IF EXISTS patients;
+DROP TABLE IF EXISTS doctors;
+DROP TABLE IF EXISTS appointments;
+
+CREATE TABLE patients (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT NOT NULL,
+email TEXT UNIQUE NOT NULL,
+password TEXT NOT NULL
+);
+
+CREATE TABLE doctors (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT NOT NULL,
+specialty TEXT NOT NULL,
+email TEXT UNIQUE NOT NULL,
+password TEXT NOT NULL
+);
+
+CREATE TABLE appointments (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+patient_id INTEGER NOT NULL,
+doctor_id INTEGER NOT NULL,
+appointment_date DATE NOT NULL,
+appointment_time TIME NOT NULL,
+no_show_risk INTEGER DEFAULT 0,
+status TEXT DEFAULT 'pending',
+FOREIGN KEY (patient_id) REFERENCES patients (id),
+FOREIGN KEY (doctor_id) REFERENCES doctors (id)
+);

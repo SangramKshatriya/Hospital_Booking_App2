@@ -1,0 +1,5 @@
+Flask
+werkzeug
+scikit-learn
+pandas
+gunicorn

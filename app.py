@@ -1,231 +1,95 @@
+# app.py
+
 import os
-import pandas as pd
-from datetime import datetime
-from flask import Flask, render_template, request, redirect, url_for, session, flash
-from werkzeug.security import generate_password_hash, check_password_hash
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-import sqlite3
+from flask import Flask
+# Import extensions from our new file
+from extensions import db, migrate, jwt 
 
-# --- Flask App Configuration ---
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your_very_secret_key' # Replace with a real secret key
-app.config['DATABASE'] = 'hospital.db'
+# --- IMPORTANT ---
+# We must import the models here *after* db is defined
+# so that Flask-Migrate can "see" them.
+import models 
+import click
+from flask_cors import CORS
+from auth import auth_bp
+from api import api_bp
 
-# --- Database Setup ---
-def init_db():
-    """Initializes the database from schema.sql."""
-    with app.app_context():
-        db = get_db()
-        with app.open_resource('schema.sql', mode='r') as f:
-            db.cursor().executescript(f.read())
-        db.commit()
+def create_app():
+    # --- App Configuration ---
+    app = Flask(__name__)
+    CORS(app)
+    
+    basedir = os.path.abspath(os.path.dirname(__file__))
 
-def get_db():
-    """Opens a new database connection if there is none yet for the current application context."""
-    if not hasattr(g, 'sqlite_db'):
-        g.sqlite_db = sqlite3.connect(
-            app.config['DATABASE'],
-            detect_types=sqlite3.PARSE_DECLTYPES
-        )
-        g.sqlite_db.row_factory = sqlite3.Row
-    return g.sqlite_db
+    # Configure the database
+    # app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'instance', 'app.db')
+    # app.py
 
-@app.teardown_appcontext
-def close_db(error):
-    """Closes the database again at the end of the request."""
-    if hasattr(g, 'sqlite_db'):
-        g.sqlite_db.close()
+# ... (right after 'basedir = ...' line)
 
-# --- ML Model Integration ---
-# Mock data for training the ML model
-data = {
-    'patient_id': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] * 50,
-    'last_appointment_missed': [0, 1, 0, 0, 1, 0, 0, 1, 0, 0] * 50,
-    'appointment_hour': [9, 10, 11, 14, 15, 9, 10, 11, 14, 15] * 50,
-    'appointment_day_of_week': [1, 2, 3, 4, 5, 1, 2, 3, 4, 5] * 50,
-    'is_no_show': [0, 1, 0, 0, 1, 0, 0, 1, 0, 0] * 50
-}
-df = pd.DataFrame(data)
-X = df[['last_appointment_missed', 'appointment_hour', 'appointment_day_of_week']]
-y = df['is_no_show']
-model = RandomForestClassifier(random_state=42)
-model.fit(X, y)
-# Helper function for model prediction
-def predict_no_show(last_missed, appointment_hour, appointment_day_of_week):
-    prediction = model.predict([[last_missed, appointment_hour, appointment_day_of_week]])
-    return prediction[0]
+# Check if we are in production (on Render)
+is_production = os.environ.get('RENDER', False)
 
-# --- Routes ---
-@app.route('/')
-def index():
-    return render_template('index.html')
+if is_production:
+    # Use the Render PostgreSQL database
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
+else:
+    # Use the local SQLite database for development
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'instance', 'app.db')
 
-@app.route('/register_patient', methods=['GET', 'POST'])
-def register_patient():
-    if request.method == 'POST':
-        name = request.form['name']
-        email = request.form['email']
-        password = request.form['password']
-        hashed_password = generate_password_hash(password, method='scrypt')
+# ... (the rest of your config) ...
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+    # Configure JWT
+    app.config['JWT_SECRET_KEY'] = 'my-super-secret-key' 
+    print(f"--- JWT Secret Key has been set to: {app.config['JWT_SECRET_KEY']} ---")
+
+    # --- Initialize Extensions with App ---
+    # The extensions were created in extensions.py
+    # Now we just initialize them with our app
+    db.init_app(app)
+    migrate.init_app(app, db)
+    jwt.init_app(app)
+
+    # Create the 'instance' folder
+    try:
+        os.makedirs(app.instance_path)
+    except OSError:
+        pass
+
+    # --- Test Route ---
+    @app.route('/')
+    def hello():
+        return "Hospital Booking API is running!"
+    
+    # --- Register Blueprints ---
+    app.register_blueprint(auth_bp, url_prefix='/auth')
+    app.register_blueprint(api_bp, url_prefix='/api') # <-- 3. REGISTER IT
+
+    # --- Add a CLI Command to Seed the Database ---
+    @app.cli.command("seed-db")
+    def seed_db():
+        """Adds some dummy doctors to the database."""
         
-        db = get_db()
-        db.execute(
-            'INSERT INTO patients (name, email, password) VALUES (?, ?, ?)',
-            (name, email, hashed_password)
-        )
-        db.commit()
-        flash('Registration successful! Please log in.', 'success')
-        return redirect(url_for('index'))
-    return render_template('register_patient.html')
+        from models import Doctor
+        # Create dummy doctors
+        doc1 = Doctor(full_name="Dr. Alice Smith", specialty="Cardiology", bio="Expert in heart health.")
+        doc2 = Doctor(full_name="Dr. Bob Johnson", specialty="Dermatology", bio="Specializes in skin care.")
+        doc3 = Doctor(full_name="Dr. Carol Williams", specialty="Pediatrics", bio="Loves working with children.")
 
-@app.route('/register_doctor', methods=['GET', 'POST'])
-def register_doctor():
-    if request.method == 'POST':
-        name = request.form['name']
-        specialty = request.form['specialty']
-        email = request.form['email']
-        password = request.form['password']
-        hashed_password = generate_password_hash(password, method='scrypt')
-
-        db = get_db()
-        db.execute(
-            'INSERT INTO doctors (name, specialty, email, password) VALUES (?, ?, ?)',
-            (name, specialty, email, hashed_password)
-        )
-        db.commit()
-        flash('Doctor registration successful! Please log in.', 'success')
-        return redirect(url_for('index'))
-    return render_template('register_doctor.html')
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        user_type = request.form['user_type']
-        db = get_db()
+        # Add them to the session
+        db.session.add(doc1)
+        db.session.add(doc2)
+        db.session.add(doc3)
         
-        if user_type == 'patient':
-            user = db.execute('SELECT * FROM patients WHERE email = ?', (email,)).fetchone()
-            if user and check_password_hash(user['password'], password):
-                session['user_id'] = user['id']
-                session['user_type'] = 'patient'
-                flash('Logged in successfully as a patient.', 'success')
-                return redirect(url_for('patient_dashboard'))
-            else:
-                flash('Invalid email or password for patient.', 'danger')
-        
-        elif user_type == 'doctor':
-            user = db.execute('SELECT * FROM doctors WHERE email = ?', (email,)).fetchone()
-            if user and check_password_hash(user['password'], password):
-                session['user_id'] = user['id']
-                session['user_type'] = 'doctor'
-                flash('Logged in successfully as a doctor.', 'success')
-                return redirect(url_for('doctor_dashboard'))
-            else:
-                flash('Invalid email or password for doctor.', 'danger')
+        # Commit the changes
+        db.session.commit()
+        print("Database seeded with 3 doctors!")
+    # We will register our blueprints (routes) here later
+    
+    return app
 
-    return redirect(url_for('index'))
-
-@app.route('/patient_dashboard')
-def patient_dashboard():
-    if 'user_id' not in session or session['user_type'] != 'patient':
-        return redirect(url_for('index'))
-    
-    db = get_db()
-    patient_id = session['user_id']
-    patient = db.execute('SELECT * FROM patients WHERE id = ?', (patient_id,)).fetchone()
-    
-    appointments = db.execute(
-        'SELECT a.appointment_date, a.appointment_time, a.status, d.name AS doctor_name, d.specialty FROM appointments a JOIN doctors d ON a.doctor_id = d.id WHERE a.patient_id = ? ORDER BY a.appointment_date DESC',
-        (patient_id,)
-    ).fetchall()
-
-    doctors = db.execute('SELECT id, name, specialty FROM doctors').fetchall()
-
-    return render_template('patient_dashboard.html', patient=patient, appointments=appointments, doctors=doctors)
-
-@app.route('/doctor_dashboard')
-def doctor_dashboard():
-    if 'user_id' not in session or session['user_type'] != 'doctor':
-        return redirect(url_for('index'))
-    
-    db = get_db()
-    doctor_id = session['user_id']
-    doctor = db.execute('SELECT * FROM doctors WHERE id = ?', (doctor_id,)).fetchone()
-    
-    pending_appointments = db.execute(
-        'SELECT a.id, a.appointment_date, a.appointment_time, p.name AS patient_name FROM appointments a JOIN patients p ON a.patient_id = p.id WHERE a.doctor_id = ? AND a.status = "pending" ORDER BY a.appointment_date ASC',
-        (doctor_id,)
-    ).fetchall()
-    
-    return render_template('doctor_dashboard.html', doctor=doctor, pending_appointments=pending_appointments)
-
-@app.route('/book_appointment', methods=['POST'])
-def book_appointment():
-    if 'user_id' not in session or session['user_type'] != 'patient':
-        return redirect(url_for('index'))
-    
-    patient_id = session['user_id']
-    doctor_id = request.form['doctor_id']
-    appointment_date = request.form['appointment_date']
-    appointment_time = request.form['appointment_time']
-    
-    db = get_db()
-    
-    # Check for existing appointment
-    existing_appointment = db.execute(
-        'SELECT * FROM appointments WHERE doctor_id = ? AND appointment_date = ? AND appointment_time = ?',
-        (doctor_id, appointment_date, appointment_time)
-    ).fetchone()
-    if existing_appointment:
-        flash('This appointment slot is already taken.', 'danger')
-        return redirect(url_for('patient_dashboard'))
-
-    # Simple ML model prediction for no-show risk
-    # This is a basic example; a real-world model would be more complex
-    last_missed = 0 # Assume no previous missed appointments for this simple example
-    appointment_hour = datetime.strptime(appointment_time, '%H:%M').hour
-    appointment_day_of_week = datetime.strptime(appointment_date, '%Y-%m-%d').weekday() + 1
-    
-    no_show_risk = predict_no_show(last_missed, appointment_hour, appointment_day_of_week)
-    
-    db.execute(
-        'INSERT INTO appointments (patient_id, doctor_id, appointment_date, appointment_time, no_show_risk) VALUES (?, ?, ?, ?, ?)',
-        (patient_id, doctor_id, appointment_date, appointment_time, no_show_risk)
-    )
-    db.commit()
-    
-    if no_show_risk == 1:
-        flash('Appointment booked, but patient is flagged as a potential no-show.', 'warning')
-    else:
-        flash('Appointment booked successfully.', 'success')
-
-    return redirect(url_for('patient_dashboard'))
-
-@app.route('/update_appointment_status/<int:appointment_id>', methods=['POST'])
-def update_appointment_status(appointment_id):
-    if 'user_id' not in session or session['user_type'] != 'doctor':
-        return redirect(url_for('index'))
-    
-    status = request.form['status']
-    db = get_db()
-    db.execute('UPDATE appointments SET status = ? WHERE id = ?', (status, appointment_id))
-    db.commit()
-    flash(f'Appointment {status} successfully.', 'success')
-    return redirect(url_for('doctor_dashboard'))
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    flash('You have been logged out.', 'info')
-    return redirect(url_for('index'))
-
+# This allows us to run the app using 'python app.py'
 if __name__ == '__main__':
-    from flask import g
-    if not os.path.exists('hospital.db'):
-        print("Creating database...")
-        init_db()
+    app = create_app()
     app.run(debug=True)

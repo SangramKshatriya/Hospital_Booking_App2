@@ -1,5 +1,1 @@
-Flask
-werkzeug
-scikit-learn
-pandas
-gunicorn
+pip freeze > requirements.txt
